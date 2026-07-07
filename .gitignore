@@ -1,0 +1,20 @@
+# 虚拟环境
+venv_hp_scan/
+
+# 配置（含内网 IP）
+config.py
+
+# 缓存
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# 临时文件
+/tmp/
+*.pdf
+*.jpg
+
+# pdf.js（可选，体积大可从 CDN 下载）
+# static/pdfjs/

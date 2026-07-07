@@ -1,0 +1,4 @@
+flask
+requests
+PyPDF2
+Pillow
