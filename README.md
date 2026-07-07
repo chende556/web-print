@@ -1,4 +1,4 @@
-# NOC Print
+# Web Print
 
 Web-based print & scan service for HP network printers.
 
@@ -23,8 +23,8 @@ Web-based print & scan service for HP network printers.
 
 ```bash
 # Clone
-git clone git@github.com:chende556/noc-print.git
-cd noc-print
+git clone git@github.com:chende556/web-print.git
+cd web-print
 
 # Virtual environment
 python3 -m venv venv
