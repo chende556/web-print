@@ -16,5 +16,8 @@ __pycache__/
 *.pdf
 *.jpg
 
+# 日志
+logs/
+
 # pdf.js（可选，体积大可从 CDN 下载）
 # static/pdfjs/

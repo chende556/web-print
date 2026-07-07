@@ -4,6 +4,8 @@ HP 扫描仪 Web 服务
 from flask import Flask, render_template, request, send_file, jsonify
 import os
 import uuid
+import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from io import BytesIO
 
@@ -12,11 +14,19 @@ from printer import print_pdf, get_printer_info, get_job_status
 from pdf_merge import merge_pdfs
 from converter import to_pdf
 from pdf_transform import transform_pdf
-from config import UPLOAD_FOLDER, PRINTER_LOCATIONS
+from config import UPLOAD_FOLDER, PRINTER_LOCATIONS, LOG_FILE
 from PyPDF2 import PdfReader, PdfWriter
 
 app = Flask(__name__)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
+# 日志配置
+logger = logging.getLogger("webprint")
+logger.setLevel(logging.INFO)
+handler = RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")
+handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+logger.addHandler(handler)
 
 # 存储临时扫描页面
 scan_sessions = {}
@@ -104,6 +114,9 @@ def do_scan():
 
         scan_sessions[session_id].append(filepath)
 
+        client_ip = request.headers.get("X-Real-IP", request.remote_addr)
+        logger.info(f"扫描成功 | 客户端={client_ip} | 打印机={scanner_ip} | 第{page_num}页 | DPI={dpi}")
+
         return jsonify({
             "success": True,
             "session_id": session_id,
@@ -112,6 +125,8 @@ def do_scan():
         })
 
     except Exception as e:
+        client_ip = request.headers.get("X-Real-IP", request.remote_addr)
+        logger.error(f"扫描失败 | 客户端={client_ip} | 打印机={scanner_ip} | 错误={str(e)}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -254,6 +269,7 @@ def do_print():
         # 转换为 PDF
         pdf_data, error = to_pdf(file_data, file.filename)
         if error:
+            logger.error(f"转换失败 | 文件={file.filename} | 打印机={printer_ip} | 错误={error}")
             return jsonify({"success": False, "error": error}), 400
 
         # 如果指定了页码范围，提取对应页
@@ -276,6 +292,10 @@ def do_print():
         # 应用旋转和缩放
         pdf_data = transform_pdf(pdf_data, orientation=orientation, scaling=scaling)
 
+        # 获取最终页数
+        final_reader = PdfReader(BytesIO(pdf_data))
+        final_pages = len(final_reader.pages)
+
         success, message, job_id = print_pdf(
             printer_ip,
             pdf_data,
@@ -284,8 +304,20 @@ def do_print():
             sides=duplex,
             color_mode=color_mode,
         )
+
+        client_ip = request.headers.get("X-Real-IP", request.remote_addr)
+        logger.info(
+            f"打印{'成功' if success else '失败'} | "
+            f"客户端={client_ip} | 打印机={printer_ip} | "
+            f"文件={file.filename} | 页数={final_pages} | 份数={copies} | "
+            f"双面={duplex} | 色彩={color_mode} | "
+            f"job_id={job_id} | 消息={message}"
+        )
+
         return jsonify({"success": success, "message": message, "job_id": job_id})
     except Exception as e:
+        client_ip = request.headers.get("X-Real-IP", request.remote_addr)
+        logger.error(f"打印异常 | 客户端={client_ip} | 打印机={printer_ip} | 文件={file.filename} | 错误={str(e)}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
