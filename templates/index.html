@@ -567,7 +567,14 @@
 
                 try {
                     const resp = await fetch('/api/print', { method: 'POST', body: formData });
-                    const data = await resp.json();
+                    let data;
+                    try {
+                        data = await resp.json();
+                    } catch (jsonErr) {
+                        message.textContent = `${file.name} 打印失败：服务器响应异常（可能超时），请重试`;
+                        message.className = 'message error';
+                        break;
+                    }
                     if (!data.success) {
                         message.textContent = `${file.name} 打印失败：${data.error || data.message}`;
                         message.className = 'message error';
@@ -575,7 +582,7 @@
                     }
                     lastJobId = data.job_id;
                 } catch (e) {
-                    message.textContent = `${file.name} 打印失败：${e.message}`;
+                    message.textContent = `${file.name} 打印失败：网络错误，请重试`;
                     message.className = 'message error';
                     break;
                 }
