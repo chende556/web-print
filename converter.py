@@ -7,6 +7,10 @@ import tempfile
 import shutil
 import os
 import platform
+import threading
+
+# LibreOffice 同时只能运行一个实例，用锁防止并发冲突
+_soffice_lock = threading.Lock()
 
 
 def get_soffice_path():
@@ -59,13 +63,14 @@ def convert_office_to_pdf(file_data, filename):
         with open(src_path, "wb") as f:
             f.write(file_data)
 
-        # 调用 LibreOffice 转换
-        result = subprocess.run(
-            [soffice, "--headless", "--convert-to", "pdf", "--outdir", tmp_dir, src_path],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        # 加锁，防止多个 LibreOffice 实例同时运行
+        with _soffice_lock:
+            result = subprocess.run(
+                [soffice, "--headless", "--convert-to", "pdf", "--outdir", tmp_dir, src_path],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
 
         if result.returncode != 0:
             raise Exception(f"LibreOffice 转换失败: {result.stderr}")

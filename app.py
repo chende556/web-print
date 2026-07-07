@@ -8,7 +8,7 @@ from datetime import datetime
 from io import BytesIO
 
 from scanner import scan, get_scanner_status
-from printer import print_pdf
+from printer import print_pdf, get_printer_info, get_job_status
 from pdf_merge import merge_pdfs
 from converter import to_pdf
 from pdf_transform import transform_pdf
@@ -43,6 +43,35 @@ def status():
 
     s = get_scanner_status(scanner_ip)
     return jsonify({"status": s})
+
+
+@app.route("/api/printer-info", methods=["POST"])
+def printer_info():
+    """获取打印机碳粉/墨盒信息"""
+    data = request.json or {}
+    printer_ip = data.get("printer_ip", "")
+    if not printer_ip:
+        return jsonify({"error": "请输入打印机 IP"}), 400
+
+    info = get_printer_info(printer_ip)
+    if info is None:
+        return jsonify({"error": "无法获取打印机信息"}), 500
+    return jsonify(info)
+
+
+@app.route("/api/job-status", methods=["POST"])
+def job_status():
+    """查询打印任务状态"""
+    data = request.json or {}
+    printer_ip = data.get("printer_ip", "")
+    job_id = data.get("job_id", 0)
+    if not printer_ip or not job_id:
+        return jsonify({"error": "缺少参数"}), 400
+
+    status = get_job_status(printer_ip, int(job_id))
+    if status is None:
+        return jsonify({"state": "unknown"})
+    return jsonify(status)
 
 
 @app.route("/api/scan", methods=["POST"])
@@ -216,6 +245,7 @@ def do_print():
     duplex = request.form.get("duplex", "one-sided")
     orientation = request.form.get("orientation", "portrait")
     scaling = int(request.form.get("scaling", 100))
+    color_mode = request.form.get("color_mode", "color")
     pages_str = request.form.get("pages", "").strip()
 
     try:
@@ -246,14 +276,15 @@ def do_print():
         # 应用旋转和缩放
         pdf_data = transform_pdf(pdf_data, orientation=orientation, scaling=scaling)
 
-        success, message = print_pdf(
+        success, message, job_id = print_pdf(
             printer_ip,
             pdf_data,
             filename=file.filename,
             copies=copies,
             sides=duplex,
+            color_mode=color_mode,
         )
-        return jsonify({"success": success, "message": message})
+        return jsonify({"success": success, "message": message, "job_id": job_id})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
