@@ -118,8 +118,11 @@ def parse_ipp_response(data):
 def print_pdf(printer_ip, pdf_data, filename="document.pdf", copies=1, sides="one-sided", color_mode="color"):
     """
     发送 PDF 到打印机（PDF 已经过旋转/缩放处理）
-    返回 (success: bool, message: str)
+    失败时自动重试（最多 3 次，每次间隔 3 秒）
+    返回 (success: bool, message: str, job_id: int|None)
     """
+    import time
+
     session = get_session()
     url = get_print_url(printer_ip)
 
@@ -127,22 +130,38 @@ def print_pdf(printer_ip, pdf_data, filename="document.pdf", copies=1, sides="on
         printer_ip, filename=filename, copies=copies, sides=sides, color_mode=color_mode,
     )
 
-    # IPP 请求 = header + PDF 数据
     payload = ipp_header + pdf_data
-
     headers = {"Content-Type": "application/ipp"}
 
-    try:
-        resp = session.post(url, data=payload, headers=headers, timeout=30)
+    max_retries = 8
+    for attempt in range(max_retries):
+        try:
+            resp = session.post(url, data=payload, headers=headers, timeout=30)
 
-        if resp.status_code == 200:
-            success, message, job_id = parse_ipp_response(resp.content)
-            return success, message, job_id
-        else:
-            return False, f"HTTP 错误: {resp.status_code}", None
+            if resp.status_code == 200:
+                success, message, job_id = parse_ipp_response(resp.content)
+                if success:
+                    if attempt > 0:
+                        message += f"（重试第{attempt}次成功）"
+                    return True, message, job_id
+                # 打印机返回错误，重试
+                if attempt < max_retries - 1:
+                    time.sleep(5)
+                    continue
+                return False, "打印机繁忙，请稍后重试（其他用户正在打印）", None
+            else:
+                if attempt < max_retries - 1:
+                    time.sleep(5)
+                    continue
+                return False, "打印机繁忙，请稍后重试（其他用户正在打印）", None
 
-    except Exception as e:
-        return False, f"连接失败: {str(e)}", None
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(5)
+                continue
+            return False, f"连接失败: {str(e)}", None
+
+    return False, "打印机繁忙，请稍后重试（其他用户正在打印）", None
 
 
 def get_printer_info(printer_ip):
