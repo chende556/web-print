@@ -144,6 +144,8 @@
                 <div class="field">
                     <label>选择文件</label>
                     <input type="file" id="printFile" multiple accept=".pdf,.jpg,.jpeg,.png,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.csv" onchange="onFileSelected()">
+                    <input type="file" id="addFileInput" multiple accept=".pdf,.jpg,.jpeg,.png,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.csv" onchange="onAddFiles()" style="display:none;">
+                    <button type="button" id="addFileBtn" onclick="document.getElementById('addFileInput').click()" style="display:none;margin-top:6px;padding:5px 12px;border:1px solid #ddd;border-radius:5px;background:#f9f9f9;cursor:pointer;font-size:12px;color:#555;">+ 添加更多文件</button>
                 </div>
                 <div id="fileList" style="display:none;margin-bottom:14px;"></div>
                 <div id="printSettings" style="display:none;">
@@ -215,12 +217,12 @@
         </div>
 
         <!-- 右侧预览 -->
-        <div class="preview-area" id="previewArea" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event)">
+        <div class="preview-area" id="previewArea" ondragover="event.preventDefault();this.classList.add('dragover')" ondragleave="this.classList.remove('dragover')" ondrop="handleInitialDrop(event)">
             <div class="placeholder" id="previewPlaceholder">
                 <div style="text-align:center;">
                     <div style="font-size:48px;margin-bottom:12px;">📄</div>
                     <div style="font-size:15px;color:#aaa;">拖放文件到此处</div>
-                    <div style="font-size:12px;color:#777;margin-top:6px;">支持 PDF、Word、Excel、图片</div>
+                    <div style="font-size:12px;color:#777;margin-top:6px;">支持 PDF、Word、Excel、PPT、图片</div>
                 </div>
             </div>
             <iframe id="pdfPreview"></iframe>
@@ -233,53 +235,38 @@
         let pageCount = 0;
         let pdfFileUrl = null;
 
-        // 阻止浏览器默认的拖放打开文件行为
+        // 阻止浏览器默认拖放（防止拖文件到页面时浏览器打开文件）
         document.addEventListener('dragover', e => e.preventDefault());
         document.addEventListener('drop', e => e.preventDefault());
 
-        // 文件队列
-        let fileQueue = [];
-
-        // 拖放处理
-        function handleDragOver(e) {
-            e.preventDefault();
-            e.stopPropagation();
-            document.getElementById('previewArea').classList.add('dragover');
-        }
-
-        function handleDragLeave(e) {
-            e.preventDefault();
-            e.stopPropagation();
-            document.getElementById('previewArea').classList.remove('dragover');
-        }
-
-        function handleDrop(e) {
+        // 初始拖放（占位区域可见时）
+        function handleInitialDrop(e) {
             e.preventDefault();
             e.stopPropagation();
             document.getElementById('previewArea').classList.remove('dragover');
 
             const files = e.dataTransfer.files;
             if (files.length > 0) {
-                // 追加到现有队列
                 const allowed = ['pdf', 'jpg', 'jpeg', 'png', 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'csv'];
+                fileQueue = [];
                 for (let i = 0; i < files.length; i++) {
                     const ext = files[i].name.split('.').pop().toLowerCase();
                     if (allowed.includes(ext)) {
                         fileQueue.push(files[i]);
                     }
                 }
-
                 if (fileQueue.length === 0) return;
 
-                // 更新 file input（用于表单兼容）
                 const dt = new DataTransfer();
                 fileQueue.forEach(f => dt.items.add(f));
                 document.getElementById('printFile').files = dt.files;
-
-                // 重新渲染
                 onFileSelected();
             }
         }
+
+        // 文件队列
+        let fileQueue = [];
+        let previewVersion = 0;  // 防止旧的异步预览覆盖新状态
 
         // 页面加载时获取地点列表
         document.addEventListener('DOMContentLoaded', loadLocations);
@@ -420,6 +407,7 @@
 
             printSettings.style.display = 'block';
             printBtn.style.display = 'block';
+            document.getElementById('addFileBtn').style.display = 'inline-block';
             loading.style.display = 'block';
             loading.textContent = '⏳ 正在转换预览...';
 
@@ -459,14 +447,36 @@
         }
 
         function hidePreview() {
-            document.getElementById('pdfPreview').style.display = 'none';
-            document.getElementById('pdfPreview').src = '';
+            previewVersion++;
+            const iframe = document.getElementById('pdfPreview');
+            iframe.src = 'about:blank';
+            iframe.style.display = 'none';
             document.getElementById('previewPlaceholder').style.display = 'block';
             document.getElementById('pdfInfoBar').style.display = 'none';
+            if (pdfFileUrl) {
+                URL.revokeObjectURL(pdfFileUrl);
+                pdfFileUrl = null;
+            }
         }
 
-        function removeFile(index) {
-            fileQueue.splice(index, 1);
+        function onAddFiles() {
+            const addInput = document.getElementById('addFileInput');
+            const allowed = ['pdf', 'jpg', 'jpeg', 'png', 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'csv'];
+
+            for (let i = 0; i < addInput.files.length; i++) {
+                const file = addInput.files[i];
+                const ext = file.name.split('.').pop().toLowerCase();
+                if (allowed.includes(ext)) {
+                    fileQueue.push(file);
+                }
+            }
+            addInput.value = '';
+
+            // 刷新列表和预览（不重置队列）
+            refreshFileList();
+        }
+
+        function refreshFileList() {
             const fileListEl = document.getElementById('fileList');
             const printSettings = document.getElementById('printSettings');
             const printBtn = document.getElementById('printBtn');
@@ -475,11 +485,13 @@
                 fileListEl.style.display = 'none';
                 printSettings.style.display = 'none';
                 printBtn.style.display = 'none';
+                document.getElementById('addFileBtn').style.display = 'none';
+                document.getElementById('printFile').value = '';
+                document.getElementById('printMessage').textContent = '';
                 hidePreview();
                 return;
             }
 
-            // 重新渲染列表
             let html = `<div style="font-size:12px;color:#555;margin-bottom:6px;font-weight:500;">打印队列（${fileQueue.length} 个文件）：</div>`;
             fileQueue.forEach((f, i) => {
                 html += `<div class="file-item" style="font-size:12px;color:#333;padding:4px 6px;cursor:pointer;border-radius:4px;display:flex;align-items:center;${i === 0 ? 'background:#e8f4fd;' : ''}" data-index="${i}">`;
@@ -489,9 +501,17 @@
             });
             fileListEl.innerHTML = html;
             fileListEl.style.display = 'block';
+            printSettings.style.display = 'block';
+            printBtn.style.display = 'block';
+            document.getElementById('addFileBtn').style.display = 'inline-block';
 
-            // 预览第一个文件
+            // 预览第一个
             previewFile(0);
+        }
+
+        function removeFile(index) {
+            fileQueue.splice(index, 1);
+            refreshFileList();
         }
 
         function previewFile(index) {
@@ -500,6 +520,7 @@
             const loading = document.getElementById('printLoading');
             loading.style.display = 'block';
             loading.textContent = '⏳ 正在转换预览...';
+            const myVersion = ++previewVersion;
 
             // 高亮选中项
             document.querySelectorAll('.file-item').forEach((el, i) => {
@@ -515,6 +536,8 @@
                     return resp.blob().then(blob => ({ blob, pages }));
                 })
                 .then(({ blob, pages }) => {
+                    // 如果版本号变了说明用户已删除/切换，丢弃这次结果
+                    if (myVersion !== previewVersion) return;
                     showPreview(blob);
                     let info = `${file.name}（${(file.size / 1024).toFixed(0)} KB）`;
                     if (pages) info += ` · ${pages} 页`;
