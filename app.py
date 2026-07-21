@@ -289,7 +289,7 @@ def do_print():
             writer.write(output)
             pdf_data = output.getvalue()
 
-        # 应用旋转和缩放
+        # 应用旋转和缩放（内部已栅格化为图片版 PDF，同时解决文字缺失问题）
         pdf_data = transform_pdf(pdf_data, orientation=orientation, scaling=scaling)
 
         # 获取最终页数

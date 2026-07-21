@@ -13,10 +13,39 @@ def get_print_url(printer_ip):
     return f"{scheme}://{printer_ip}:{SCANNER_PORT}/ipp/print"
 
 
-def build_ipp_request(printer_ip, filename="document.pdf", copies=1, sides="one-sided", color_mode="color"):
+def get_media_keyword(width_pt=None, height_pt=None):
+    """
+    根据 PDF 实际页面尺寸生成 IPP media 关键字。
+    不再硬编码 A4——如果文件尺寸接近 A4 就用标准 iso_a4，
+    否则用 PWG 自描述自定义纸张格式：custom_宽x高mm
+
+    width_pt/height_pt: 页面尺寸（单位：点，1pt = 1/72 inch）
+    未提供尺寸时回退为 A4（保持向后兼容）
+    """
+    if width_pt is None or height_pt is None:
+        return "iso_a4_210x297mm"
+
+    width_mm = width_pt / 72 * 25.4
+    height_mm = height_pt / 72 * 25.4
+
+    # 接近标准 A4（±2mm 容差）就用标准关键字，兼容性更好
+    if abs(width_mm - 210) < 2 and abs(height_mm - 297) < 2:
+        return "iso_a4_210x297mm"
+    if abs(width_mm - 297) < 2 and abs(height_mm - 210) < 2:
+        return "iso_a4_297x210mm"
+
+    # 非标准尺寸：用自定义纸张关键字（PWG5101.1 自描述格式）
+    return f"custom_{width_mm:.0f}x{height_mm:.0f}mm_{width_mm:.0f}x{height_mm:.0f}mm"
+
+
+def build_ipp_request(printer_ip, filename="document.pdf", copies=1, sides="one-sided",
+                       color_mode="color", page_width_pt=None, page_height_pt=None):
     """
     构造 IPP Print-Job 请求的二进制数据头
     IPP version 2.0, operation Print-Job (0x0002)
+
+    page_width_pt / page_height_pt: PDF 实际页面尺寸（点），用于生成正确的 media，
+    不再固定为 A4，避免非标准尺寸文件（如电子发票）被强行按 A4 布局导致裁切/错位
     """
     data = struct.pack(">bbHI", 2, 0, 0x0002, 1)
 
@@ -34,7 +63,9 @@ def build_ipp_request(printer_ip, filename="document.pdf", copies=1, sides="one-
     data += _encode_integer(0x21, "copies", copies)
     data += _encode_attribute(0x44, "sides", sides)
     # 必须指定 media 和 media-type，否则打印机会忽略 sides 属性
-    data += _encode_attribute(0x44, "media", "iso_a4_210x297mm")
+    # media 根据实际文件尺寸动态生成，而不是硬编码 A4
+    media_keyword = get_media_keyword(page_width_pt, page_height_pt)
+    data += _encode_attribute(0x44, "media", media_keyword)
     data += _encode_attribute(0x44, "media-type", "stationery")
     # 彩色/黑白
     data += _encode_attribute(0x44, "print-color-mode", color_mode)
@@ -122,12 +153,28 @@ def print_pdf(printer_ip, pdf_data, filename="document.pdf", copies=1, sides="on
     返回 (success: bool, message: str, job_id: int|None)
     """
     import time
+    from PyPDF2 import PdfReader
+    from io import BytesIO
 
     session = get_session()
     url = get_print_url(printer_ip)
 
+    # pdf_transform.transform_pdf 现在始终输出标准 A4 画布（竖放或横放），
+    # 所以这里直接按实际页面尺寸生成 media（会自动匹配 iso_a4_210x297mm
+    # 或横放的 iso_a4_297x210mm），不再需要处理非标准尺寸的情况
+    page_width_pt = page_height_pt = None
+    try:
+        reader = PdfReader(BytesIO(pdf_data))
+        if len(reader.pages) > 0:
+            page = reader.pages[0]
+            page_width_pt = float(page.mediabox.width)
+            page_height_pt = float(page.mediabox.height)
+    except Exception:
+        pass  # 读取失败则回退为 A4（get_media_keyword 的默认行为）
+
     ipp_header = build_ipp_request(
         printer_ip, filename=filename, copies=copies, sides=sides, color_mode=color_mode,
+        page_width_pt=page_width_pt, page_height_pt=page_height_pt,
     )
 
     payload = ipp_header + pdf_data
