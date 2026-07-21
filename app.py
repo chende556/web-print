@@ -176,16 +176,22 @@ def cancel():
 
 @app.route("/api/preview", methods=["POST"])
 def preview():
-    """上传文件，转换为 PDF 后返回预览"""
+    """上传文件，转换为 PDF 后按方向/缩放参数渲染，返回最终打印效果预览"""
     file = request.files.get("file")
     if not file:
         return jsonify({"error": "无文件"}), 400
+
+    orientation = request.form.get("orientation", "portrait")
+    scaling = int(request.form.get("scaling", 100))
 
     try:
         file_data = file.read()
         pdf_data, error = to_pdf(file_data, file.filename)
         if error:
             return jsonify({"error": error}), 400
+
+        # 应用方向和缩放（输出 A4 画布 + 栅格化）
+        pdf_data = transform_pdf(pdf_data, orientation=orientation, scaling=scaling)
 
         reader = PdfReader(BytesIO(pdf_data))
         pages = len(reader.pages)

@@ -174,14 +174,14 @@
                     </div>
                     <div class="field">
                         <label>方向</label>
-                        <select id="orientation">
+                        <select id="orientation" onchange="refreshPreview()">
                             <option value="portrait">纵向</option>
                             <option value="landscape">横向</option>
                         </select>
                     </div>
                     <div class="field">
                         <label>缩放 (%)</label>
-                        <input type="number" id="scaling" value="100" min="10" max="200">
+                        <input type="number" id="scaling" value="100" min="10" max="200" onchange="refreshPreview()">
                     </div>
                 </div>
                 <div class="loading" id="printLoading">⏳ 正在处理...</div>
@@ -414,6 +414,8 @@
             // 预览第一个文件
             const formData = new FormData();
             formData.append('file', fileQueue[0]);
+            formData.append('orientation', document.getElementById('orientation').value);
+            formData.append('scaling', document.getElementById('scaling').value);
             fetch('/api/preview', { method: 'POST', body: formData })
                 .then(resp => {
                     if (!resp.ok) return resp.json().then(d => { throw new Error(d.error); });
@@ -514,6 +516,12 @@
             refreshFileList();
         }
 
+        function refreshPreview() {
+            // 方向或缩放改变时，用当前预览的文件重新请求预览
+            if (fileQueue.length === 0) return;
+            previewFile(0);
+        }
+
         function previewFile(index) {
             if (index >= fileQueue.length) return;
             const file = fileQueue[index];
@@ -529,6 +537,8 @@
 
             const formData = new FormData();
             formData.append('file', file);
+            formData.append('orientation', document.getElementById('orientation').value);
+            formData.append('scaling', document.getElementById('scaling').value);
             fetch('/api/preview', { method: 'POST', body: formData })
                 .then(resp => {
                     if (!resp.ok) return resp.json().then(d => { throw new Error(d.error); });
