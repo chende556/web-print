@@ -28,11 +28,15 @@ def get_media_keyword(width_pt=None, height_pt=None):
     width_mm = width_pt / 72 * 25.4
     height_mm = height_pt / 72 * 25.4
 
-    # 接近标准 A4（±2mm 容差）就用标准关键字，兼容性更好
+    # 接近标准 A4（±2mm 容差）就用标准关键字，兼容性更好。
+    # 注意：横向 A4 也必须用竖版关键字 iso_a4_210x297mm——纸盒里的物理纸永远是
+    # 短边×长边竖放的，HP 固件不认识 iso_a4_297x210mm 这种反向尺寸，一旦传了
+    # 不被识别的 media，打印机会连带忽略 sides 属性导致双面失效。横向效果由
+    # transform_pdf 画好的横版内容画布保证，与纸张方向无关。
     if abs(width_mm - 210) < 2 and abs(height_mm - 297) < 2:
         return "iso_a4_210x297mm"
     if abs(width_mm - 297) < 2 and abs(height_mm - 210) < 2:
-        return "iso_a4_297x210mm"
+        return "iso_a4_210x297mm"
 
     # 非标准尺寸：用自定义纸张关键字（PWG5101.1 自描述格式）
     return f"custom_{width_mm:.0f}x{height_mm:.0f}mm_{width_mm:.0f}x{height_mm:.0f}mm"
