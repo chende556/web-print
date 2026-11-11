@@ -132,6 +132,7 @@
                 <span id="statusText">未连接</span>
                 <button onclick="checkStatus()" style="margin-left:auto;padding:3px 10px;border:1px solid #ddd;border-radius:4px;background:white;cursor:pointer;font-size:11px;">检测</button>
             </div>
+            <div id="paperInfo" role="status" style="margin-bottom:8px;font-size:12px;"></div>
             <div id="markerInfo" style="display:none;margin-bottom:14px;padding:10px 12px;background:#f9f9f9;border-radius:6px;font-size:12px;"></div>
 
             <div class="tabs">
@@ -305,6 +306,7 @@
         // === 状态检测 ===
         async function checkStatus() {
             const ip = document.getElementById('printerIp').value.trim();
+            document.getElementById('paperInfo').textContent = '';
             if (!ip) { document.getElementById('statusText').textContent = '请输入 IP'; return; }
             try {
                 const resp = await fetch('/api/status', {
@@ -318,23 +320,53 @@
                 else if (data.status === 'busy') { dot.className = 'status-dot busy'; text.textContent = '忙碌'; }
                 else { dot.className = 'status-dot error'; text.textContent = '离线'; }
 
-                // 查询碳粉信息
-                if (data.status === 'idle' || data.status === 'busy') {
-                    fetchMarkerInfo(ip);
-                }
+                fetchMarkerInfo(ip);
             } catch (e) {
                 document.getElementById('statusDot').className = 'status-dot error';
                 document.getElementById('statusText').textContent = '无法连接';
             }
         }
 
+        let markerRequest = 0;
         async function fetchMarkerInfo(ip) {
+            const requestId = ++markerRequest;
+            const paper = document.getElementById('paperInfo');
             try {
                 const resp = await fetch('/api/printer-info', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({printer_ip: ip})
                 });
                 const data = await resp.json();
+                if (requestId !== markerRequest ||
+                    ip !== document.getElementById('printerIp').value.trim()) return;
+                if (!resp.ok) {
+                    paper.textContent = '无法读取纸张余量';
+                } else {
+                    const paperLabels = {
+                        needed: '缺纸或需要指定纸张，请检查纸盒',
+                        empty: '有纸盒缺纸',
+                        low: '纸张不足'
+                    };
+                    paper.textContent = paperLabels[data.paper_status] || '';
+                    for (const tray of data.trays || []) {
+                        const source = tray.name.trim().toLowerCase();
+                        if (['auto', 'manual', 'manual-feed'].includes(source)) continue;
+                        const number = source.match(/^tray[- ]?(\d+)$/);
+                        const name = number ? '纸盒 ' + number[1] : tray.name;
+                        const row = document.createElement('div');
+                        const media = (tray.media_name || '').trim().toLowerCase();
+                        const isoSize = media.match(/^(?:iso_)?(a[0-9]+)(?:_|$)/);
+                        const size = isoSize ? isoSize[1].toUpperCase() :
+                            new Map([['na-letter', 'Letter'], ['na-legal', 'Legal']]).get(media);
+                        let level = '纸张状态未知';
+                        if (tray.empty) level = '无纸';
+                        else if (tray.sheets != null) level = '剩余 ' + tray.sheets + ' 张';
+                        else if (tray.has_paper) level = '有纸';
+                        row.textContent = [name, size, level].filter(Boolean).join(' · ');
+                        paper.append(row);
+                    }
+                    if (!paper.textContent) paper.textContent = '打印机未报告纸张余量';
+                }
                 const el = document.getElementById('markerInfo');
                 if (data.markers && data.markers.length > 0) {
                     let html = '<strong>耗材状态：</strong><br>';
@@ -353,6 +385,9 @@
                     el.style.display = 'none';
                 }
             } catch (e) {
+                if (requestId !== markerRequest ||
+                    ip !== document.getElementById('printerIp').value.trim()) return;
+                paper.textContent = '无法读取纸张余量';
                 document.getElementById('markerInfo').style.display = 'none';
             }
         }
@@ -630,6 +665,10 @@
                 message.className = 'message success';
             }
 
+            if (ip === document.getElementById('printerIp').value.trim()) {
+                fetchMarkerInfo(ip);
+            }
+
             // 轮询最后一个任务状态
             if (lastJobId) {
                 pollJobStatus(ip, lastJobId, message, loading);
@@ -642,6 +681,7 @@
             const stateMap = {
                 'pending': '排队中...',
                 'processing': '打印中...',
+                'processing-stopped': '打印暂停，请检查打印机',
                 'completed': '✅ 打印完成',
                 'canceled': '已取消',
                 'aborted': '打印中断',
@@ -659,10 +699,15 @@
                     });
                     const data = await resp.json();
                     const state = data.state || 'unknown';
-                    const display = stateMap[state] || state;
+                    const paperNeeded = data.paper_needed &&
+                        !['completed', 'canceled'].includes(state);
+                    const display = paperNeeded
+                        ? (state === 'aborted' ? '打印中断' : '等待纸张') + '：请检查纸盒并补充所需纸张'
+                        : stateMap[state] || state;
 
                     messageEl.textContent = display;
-                    messageEl.className = state === 'completed' ? 'message success' : 'message';
+                    messageEl.className = paperNeeded ? 'message error' :
+                        state === 'completed' ? 'message success' : 'message';
 
                     // 继续轮询（未完成且未超时）
                     if (!['completed', 'canceled', 'aborted'].includes(state) && attempts < maxAttempts) {

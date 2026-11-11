@@ -153,7 +153,7 @@ def parse_ipp_response(data):
 def print_pdf(printer_ip, pdf_data, filename="document.pdf", copies=1, sides="one-sided", color_mode="color"):
     """
     发送 PDF 到打印机（PDF 已经过旋转/缩放处理）
-    失败时自动重试（最多 3 次，每次间隔 3 秒）
+    失败时最多尝试 8 次，每次重试间隔 5 秒
     返回 (success: bool, message: str, job_id: int|None)
     """
     import time
@@ -195,32 +195,22 @@ def print_pdf(printer_ip, pdf_data, filename="document.pdf", copies=1, sides="on
                     if attempt > 0:
                         message += f"（重试第{attempt}次成功）"
                     return True, message, job_id
-                # 打印机返回错误，重试
-                if attempt < max_retries - 1:
-                    time.sleep(5)
-                    continue
-                return False, "打印机繁忙，请稍后重试（其他用户正在打印）", None
             else:
-                if attempt < max_retries - 1:
-                    time.sleep(5)
-                    continue
-                return False, "打印机繁忙，请稍后重试（其他用户正在打印）", None
+                message = f"打印机返回 HTTP {resp.status_code}"
+        except Exception as exc:
+            message = f"连接失败: {exc}"
 
-        except Exception as e:
-            if attempt < max_retries - 1:
-                time.sleep(5)
-                continue
-            return False, f"连接失败: {str(e)}", None
+        info = get_printer_info(printer_ip) or {}
+        if info.get("paper_status") == "needed":
+            return False, "打印机缺纸或需要指定纸张，请检查纸盒", None
+        if attempt < max_retries - 1:
+            time.sleep(5)
 
-    return False, "打印机繁忙，请稍后重试（其他用户正在打印）", None
+    return False, message, None
 
 
 def get_printer_info(printer_ip):
-    """
-    查询打印机碳粉/墨盒信息
-    通过 IPP Get-Printer-Attributes 获取 marker-names 和 marker-levels
-    返回列表 [{"name": "Black", "level": 45}, ...]
-    """
+    """通过 IPP 查询打印机状态、碳粉和纸盒信息。"""
     session = get_session()
     scheme = "https" if USE_HTTPS else "http"
     url = f"{scheme}://{printer_ip}:{SCANNER_PORT}/ipp/print"
@@ -241,6 +231,7 @@ def get_printer_info(printer_ip):
     data += _encode_attribute(0x44, "", "marker-colors")
     data += _encode_attribute(0x44, "", "printer-state")
     data += _encode_attribute(0x44, "", "printer-state-reasons")
+    data += _encode_attribute(0x44, "", "printer-input-tray")
 
     data += b"\x03"  # end
 
@@ -256,25 +247,21 @@ def get_printer_info(printer_ip):
         return None
 
 
+def _state_reason(value):
+    reason = value.decode("ascii", errors="ignore")
+    for suffix in ("-warning", "-error", "-report"):
+        if reason.endswith(suffix):
+            return reason[:-len(suffix)]
+    return reason
+
+
 def _parse_printer_attributes(data):
-    """
-    解析 IPP Get-Printer-Attributes 响应，提取碳粉信息
-    简单解析：从原始字节中搜索 marker 相关文本
-    """
-    result = {"markers": [], "state": "unknown"}
+    """解析打印机状态、碳粉和纸盒数据。"""
+    if len(data) < 8 or struct.unpack_from(">H", data, 2)[0] > 0x00FF:
+        return None
 
-    # 转为文本搜索（IPP 二进制里属性值是明文）
-    text = data.decode("latin-1", errors="ignore")
-
-    # 提取 marker-names（逗号分隔的名称列表）
-    names = []
-    levels = []
-
-    # 解析属性值 - 搜索关键字
-    # marker-names 是 1setOf nameWithoutLanguage
-    # marker-levels 是 1setOf integer
-
-    # 简易方式：用二进制解析
+    result = {"markers": [], "state": "unknown", "trays": [], "paper_status": None}
+    reasons = set()
     pos = 8  # 跳过 header
     current_attr = ""
     marker_names_list = []
@@ -313,6 +300,28 @@ def _parse_printer_attributes(data):
         value_bytes = data[pos:pos+value_len]
         pos += value_len
 
+        if len(value_bytes) != value_len:
+            break
+
+        if current_attr == "printer-state-reasons" and tag == 0x44:
+            reasons.add(_state_reason(value_bytes))
+        elif current_attr == "printer-input-tray" and tag == 0x30:
+            fields = dict(field.split("=", 1) for field in
+                          value_bytes.decode("utf-8", errors="replace").split(";")
+                          if "=" in field)
+            try:
+                level = int(fields.get("level", "-2"))
+            except ValueError:
+                level = -2
+            result["trays"].append({
+                "name": fields.get("name") or f"纸盒 {len(result['trays']) + 1}",
+                "sheets": level if level >= 0 and fields.get("unit") == "sheets" else None,
+                "empty": level == 0,
+                # RFC 3805: -3 表示至少还有一些介质，-2 表示未知。
+                "has_paper": level == -3 or level > 0,
+                "media_name": fields.get("medianame", ""),
+            })
+
         # 收集属性
         if current_attr == "marker-names" and tag in (0x41, 0x42, 0x44, 0x48):
             marker_names_list.append(value_bytes.decode("utf-8", errors="ignore"))
@@ -339,13 +348,22 @@ def _parse_printer_attributes(data):
         for name in marker_names_list:
             result["markers"].append({"name": name, "level": -1})
 
+    if "media-needed" in reasons or (
+        "media-empty" in reasons and result["state"] == "stopped"
+    ):
+        result["paper_status"] = "needed"
+    elif "media-empty" in reasons:
+        result["paper_status"] = "empty"
+    elif "media-low" in reasons:
+        result["paper_status"] = "low"
+
     return result
 
 
 def get_job_status(printer_ip, job_id):
     """
     查询打印任务状态
-    返回 {"state": "processing", "state_reasons": "none"}
+    返回任务状态及是否需要补纸。
     """
     session = get_session()
     scheme = "https" if USE_HTTPS else "http"
@@ -370,10 +388,14 @@ def get_job_status(printer_ip, job_id):
         resp = session.post(url, data=data, headers=headers, timeout=10)
         if resp.status_code != 200:
             return None
+        if len(resp.content) < 8 or struct.unpack_from(">H", resp.content, 2)[0] > 0x00FF:
+            return None
 
         # 解析 job-state
         pos = 8
         state = "unknown"
+        current_attr = ""
+        reasons = set()
         while pos < len(resp.content):
             tag = resp.content[pos]
             pos += 1
@@ -386,6 +408,8 @@ def get_job_status(printer_ip, job_id):
             name_len = struct.unpack(">H", resp.content[pos:pos+2])[0]
             pos += 2
             name = resp.content[pos:pos+name_len].decode("utf-8", errors="ignore") if name_len > 0 else ""
+            if name:
+                current_attr = name
             pos += name_len
             if pos + 2 > len(resp.content):
                 break
@@ -394,7 +418,11 @@ def get_job_status(printer_ip, job_id):
             value_bytes = resp.content[pos:pos+value_len]
             pos += value_len
 
-            if name == "job-state" and tag == 0x23 and value_len == 4:
+            if len(value_bytes) != value_len:
+                break
+            if current_attr == "job-state-reasons" and tag == 0x44:
+                reasons.add(_state_reason(value_bytes))
+            if current_attr == "job-state" and tag == 0x23 and value_len == 4:
                 state_val = struct.unpack(">I", value_bytes)[0]
                 # 3=pending, 4=pending-held, 5=processing, 6=processing-stopped,
                 # 7=canceled, 8=aborted, 9=completed
@@ -404,6 +432,10 @@ def get_job_status(printer_ip, job_id):
                 }
                 state = state_map.get(state_val, f"unknown({state_val})")
 
-        return {"state": state}
+        paper_needed = bool(reasons & {"media-needed", "media-empty"})
+        if not paper_needed and state == "processing-stopped":
+            info = get_printer_info(printer_ip) or {}
+            paper_needed = info.get("paper_status") == "needed"
+        return {"state": state, "paper_needed": paper_needed}
     except Exception:
         return None
